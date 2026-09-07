@@ -7,6 +7,7 @@ import numpy as np
 
 from vision.calibration import detect_aruco_marker
 from vision.measurement import measure_rectangular_object
+from vision.report import generate_pdf_report
 
 app = FastAPI(title="AI Vision Inspection")
 
@@ -16,6 +17,12 @@ app.mount(
     "/static",
     StaticFiles(directory=BASE_DIR / "static"),
     name="static"
+)
+
+app.mount(
+    "/reports",
+    StaticFiles(directory=BASE_DIR / "reports"),
+    name="reports"
 )
 
 
@@ -100,4 +107,46 @@ async def measure(file: UploadFile = File(...)):
             "mm_per_pixel": calibration_result["mm_per_pixel"]
         },
         "measurement": measurement_result
+    }
+
+
+@app.post("/report")
+async def report(file: UploadFile = File(...)):
+
+    data = await file.read()
+
+    image = cv2.imdecode(
+        np.frombuffer(data, np.uint8),
+        cv2.IMREAD_COLOR
+    )
+
+    if image is None:
+        return {"success": False, "message": "Invalid image"}
+
+    calibration_result = detect_aruco_marker(image, marker_size_mm=80.0)
+
+    if not calibration_result["success"]:
+        return {
+            "success": False,
+            "message": "Calibration failed: " + calibration_result["message"]
+        }
+
+    measurement_result = measure_rectangular_object(
+        image,
+        calibration_result["mm_per_pixel"],
+        calibration_result["marker_corners"]
+    )
+
+    if not measurement_result["success"]:
+        return {
+            "success": False,
+            "message": "Measurement failed: " + measurement_result["message"]
+        }
+
+    report_result = generate_pdf_report(image, calibration_result, measurement_result)
+
+    return {
+        "success": True,
+        "pdf_url": "/" + report_result["pdf_path"].replace("\\", "/"),
+        "pass_fail": report_result["pass_fail"]
     }
