@@ -1,10 +1,34 @@
 import cv2
 import numpy as np
 
+def detect_defects(contour, approx, area_px):
+    """
+    Detect basic abnormalities like jagged/damaged edges, deformation, 
+    or unexpected geometric irregularities.
+    """
+    defects_found = []
+    
+    # 1. Check Solidity (Detects notches, bite marks, or missing chunks)
+    hull = cv2.convexHull(contour)
+    hull_area = cv2.contourArea(hull)
+    solidity = float(area_px) / hull_area if hull_area > 0 else 0
+    
+    if solidity < 0.88:
+        defects_found.append("Edge notch/surface damage detected")
+
+    # 2. Contour Roughness / Edge Jaggedness Check
+    perimeter = cv2.arcLength(contour, True)
+    approx_perimeter = cv2.arcLength(approx, True)
+    if approx_perimeter > 0 and (perimeter / approx_perimeter) > 1.25:
+        defects_found.append("Jagged or uneven edge profile")
+
+    return defects_found
+
+
 def classify_and_measure_object(image, mm_per_pixel, marker_corners):
     """
     Detects the primary object in the image, classifies it (Plate, Washer, Bolt),
-    and measures its dimensions in real-world mm.
+    measures its dimensions in real-world mm, and runs defect inspection.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -36,6 +60,13 @@ def classify_and_measure_object(image, mm_per_pixel, marker_corners):
     if perimeter_px == 0:
         return {"success": False, "message": "Invalid contour geometry"}
 
+    # Polygonal approximation for geometry defect checks
+    epsilon = 0.02 * perimeter_px
+    approx = cv2.approxPolyDP(c, epsilon, True)
+
+    # Defect scan
+    detected_defects = detect_defects(c, approx, area_px)
+
     # Circularity calculation to distinguish round objects
     circularity = 4 * np.pi * area_px / (perimeter_px ** 2)
     
@@ -49,7 +80,6 @@ def classify_and_measure_object(image, mm_per_pixel, marker_corners):
         # Estimate inner hole via child contours
         inner_dia_mm = round(outer_dia_mm * 0.5, 2) # Fallback heuristic
         if hierarchy is not None:
-            # Check for inner contour (hole)
             for i, h in enumerate(hierarchy[0]):
                 if h[3] != -1: # Has parent contour
                     inner_area = cv2.contourArea(contours[i])
@@ -57,6 +87,8 @@ def classify_and_measure_object(image, mm_per_pixel, marker_corners):
                         inner_radius = np.sqrt(inner_area / np.pi)
                         inner_dia_mm = round((inner_radius * 2) * mm_per_pixel, 2)
                         break
+
+        pass_status = (10.0 <= outer_dia_mm <= 50.0) and len(detected_defects) == 0
 
         return {
             "success": True,
@@ -66,12 +98,13 @@ def classify_and_measure_object(image, mm_per_pixel, marker_corners):
                 "outer_diameter_mm": outer_dia_mm,
                 "inner_diameter_mm": inner_dia_mm
             },
+            "defects": detected_defects if detected_defects else ["None"],
             "data_sources": {
                 "outer_diameter_mm": "Directly Measured (CV)",
                 "inner_diameter_mm": "Directly Measured (CV)",
                 "standard_match": "ISO 7089 Standard Washer"
             },
-            "pass_fail": "PASS" if (10.0 <= outer_dia_mm <= 50.0) else "FAIL"
+            "pass_fail": "PASS" if pass_status else "FAIL"
         }
 
     # -------------------------------------------------------------
@@ -90,6 +123,7 @@ def classify_and_measure_object(image, mm_per_pixel, marker_corners):
         
         # Match against ISO Metric Bolt standards
         standard_size = "M8" if head_width_mm <= 13.0 else ("M10" if head_width_mm <= 16.0 else "M12")
+        pass_status = (length_mm > 15.0) and len(detected_defects) == 0
 
         return {
             "success": True,
@@ -100,20 +134,22 @@ def classify_and_measure_object(image, mm_per_pixel, marker_corners):
                 "head_width_mm": head_width_mm,
                 "estimated_pitch_mm": 1.25 if standard_size == "M8" else 1.50
             },
+            "defects": detected_defects if detected_defects else ["None"],
             "data_sources": {
                 "length_mm": "Directly Measured (CV)",
                 "head_width_mm": "Directly Measured (CV)",
                 "estimated_pitch_mm": "Standards Database Matched",
                 "standard_size": "ISO Metric " + standard_size
             },
-            "pass_fail": "PASS" if (length_mm > 15.0) else "FAIL"
+            "pass_fail": "PASS" if pass_status else "FAIL"
         }
 
     # -------------------------------------------------------------
-    # 3. RECTANGULAR PLATE (Default for low circularity/flat shapes)
+    # 3. RECTANGULAR PLATE (Default for flat shapes)
     # -------------------------------------------------------------
     width_mm = round(width_px * mm_per_pixel, 2)
     height_mm = round(length_px * mm_per_pixel, 2)
+    pass_status = len(detected_defects) == 0
 
     return {
         "success": True,
@@ -124,15 +160,17 @@ def classify_and_measure_object(image, mm_per_pixel, marker_corners):
             "height_mm": height_mm,
             "area_sq_mm": round(width_mm * height_mm, 2)
         },
+        "defects": detected_defects if detected_defects else ["None"],
         "data_sources": {
             "width_mm": "Directly Measured (CV)",
             "height_mm": "Directly Measured (CV)",
             "area_sq_mm": "AI Calculated"
         },
-        "pass_fail": "PASS"
+        "pass_fail": "PASS" if pass_status else "FAIL"
     }
 
 
 def measure_rectangular_object(image, mm_per_pixel, marker_corners):
     """ Backward compatibility wrapper """
     return classify_and_measure_object(image, mm_per_pixel, marker_corners)
+
