@@ -195,11 +195,15 @@
 
         if (result.success) {
             const m = result.measurement;
+            const id = m.identification;
             statusBox.innerText =
                 "✅ Measurement successful!\n" +
+                "Component: " + id.component_type + "\n" +
                 "Width: " + m.width_mm + " mm\n" +
                 "Height: " + m.height_mm + " mm\n" +
-                "Scale used: " + result.calibration.mm_per_pixel.toFixed(4) + " mm/pixel";
+                "Has hole: " + (m.has_internal_hole ? "Yes" : "No") + "\n" +
+                "Scale used: " + result.calibration.mm_per_pixel.toFixed(4) + " mm/pixel\n" +
+                "Reason: " + id.reason;
         } else {
             statusBox.innerText = "Result: " + JSON.stringify(result);
         }
